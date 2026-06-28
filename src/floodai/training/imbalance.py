@@ -34,6 +34,17 @@ def resample_training_only(
         )
         return X_train, y_train
 
+    n_negative = int(np.sum(y_train == 0))
+    current_ratio = n_positive / max(1, n_negative)
+    
+    if current_ratio >= sampling_strategy:
+        logger.warning(
+            "Current positive ratio (%.3f) >= sampling_strategy (%.3f). "
+            "Skipping SMOTE to avoid downsampling error. Using original data.",
+            current_ratio, sampling_strategy
+        )
+        return X_train, y_train
+
     k = min(k_neighbors_max, n_positive - 1)
     smote = SMOTE(random_state=seed, k_neighbors=k, sampling_strategy=sampling_strategy)
     X_res, y_res = smote.fit_resample(X_train, y_train)

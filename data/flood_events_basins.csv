@@ -1,0 +1,11 @@
+Basin,Region_Name,Start,End,Severity,Source,Source_Reference
+ganga_bihar,Patna,2017-08-12,2017-08-20,Extreme,CWC,CWC Annual Flood Report 2017
+ganga_bihar,Patna,2019-09-25,2019-10-04,Extreme,CWC,CWC Annual Flood Report 2019
+ganga_bihar,Darbhanga,2020-07-15,2020-08-10,High,DFO,DFO Event ID 4950
+ganga_bihar,Bhagalpur,2021-08-10,2021-08-20,Medium,CWC,CWC Annual Flood Report 2021
+brahmaputra_assam,Dhubri,2017-08-10,2017-08-25,Extreme,DFO,DFO Event ID 4505
+brahmaputra_assam,Barpeta,2019-07-10,2019-07-25,High,DFO,DFO Event ID 4771
+brahmaputra_assam,Kaziranga,2020-06-25,2020-07-20,Extreme,DFO,DFO Event ID 4933
+brahmaputra_assam,Silchar,2022-05-15,2022-06-25,Extreme,DFO,DFO Event ID 5188
+mahanadi_odisha,Cuttack,2020-08-25,2020-09-05,High,CWC,CWC Annual Flood Report 2020
+mahanadi_odisha,Puri,2022-08-15,2022-08-25,Medium,CWC,CWC Annual Flood Report 2022

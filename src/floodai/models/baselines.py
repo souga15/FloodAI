@@ -18,7 +18,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import RobustScaler
 
 from floodai.evaluation.metrics import evaluate
-from floodai.training.threshold import select_optimal_threshold
+from floodai.training.threshold import select_f1_optimal_threshold
 
 logger = logging.getLogger("floodai.models.baselines")
 

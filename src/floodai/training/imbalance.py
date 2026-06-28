@@ -35,12 +35,12 @@ def resample_training_only(
         return X_train, y_train
 
     n_negative = int(np.sum(y_train == 0))
-    natural_ratio = float(n_positive) / float(n_negative) if n_negative > 0 else 1.0
-    if natural_ratio >= sampling_strategy:
+    desired_positive = int(sampling_strategy * n_negative)
+    if desired_positive <= n_positive:
         logger.warning(
-            "Natural positive ratio (%.3f) is already >= sampling_strategy (%.3f). "
-            "Skipping SMOTE to prevent imblearn downsampling errors.",
-            natural_ratio, sampling_strategy
+            "Desired positive samples (%d) is <= existing positives (%d) for "
+            "sampling_strategy=%.3f. Skipping SMOTE to prevent imblearn downsampling error.",
+            desired_positive, n_positive, sampling_strategy
         )
         return X_train, y_train
 

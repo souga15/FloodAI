@@ -11,9 +11,11 @@ from floodai.data.rainfall_providers import get_rainfall_provider
 from floodai.features.pipeline import (
     add_temporal_features, add_rainfall_window_features,
 )
+from floodai.config import load_config
 import logging
 
 logger = logging.getLogger("floodai.features")
+cfg = load_config(Path("config/config.yaml"))
 
 print("--- Step 2: Fetching IMD Rainfall Data ---")
 provider = get_rainfall_provider(

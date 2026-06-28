@@ -34,16 +34,6 @@ def resample_training_only(
         )
         return X_train, y_train
 
-    n_negative = int(np.sum(y_train == 0))
-    desired_positive = int(sampling_strategy * n_negative)
-    if desired_positive <= n_positive:
-        logger.warning(
-            "Desired positive samples (%d) is <= existing positives (%d) for "
-            "sampling_strategy=%.3f. Skipping SMOTE to prevent imblearn downsampling error.",
-            desired_positive, n_positive, sampling_strategy
-        )
-        return X_train, y_train
-
     k = min(k_neighbors_max, n_positive - 1)
     smote = SMOTE(random_state=seed, k_neighbors=k, sampling_strategy=sampling_strategy)
     X_res, y_res = smote.fit_resample(X_train, y_train)

@@ -17,7 +17,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import RobustScaler
 
-from floodai.evaluation.metrics import evaluate_model
+from floodai.evaluation.metrics import evaluate
 from floodai.training.threshold import select_optimal_threshold
 
 logger = logging.getLogger("floodai.models.baselines")
@@ -119,7 +119,7 @@ def run_baselines(
     tau_clim, _ = select_optimal_threshold(y_val, val_probs_clim)
     
     test_probs_clim = climatology.predict_proba(raw_test_df)[:, 1]
-    metrics_clim = evaluate_model(y_test, test_probs_clim, tau_clim, "Climatological", provenance="baseline")
+    metrics_clim = evaluate(y_test, test_probs_clim, tau_clim, "Climatological", provenance="held_out")
     results["Climatological"] = metrics_clim
 
 
@@ -137,7 +137,7 @@ def run_baselines(
     tau_lr, _ = select_optimal_threshold(y_val, val_probs_lr)
     
     test_probs_lr = lr.predict_proba(X_test_scaled)[:, 1]
-    metrics_lr = evaluate_model(y_test, test_probs_lr, tau_lr, "LogisticRegression", provenance="baseline")
+    metrics_lr = evaluate(y_test, test_probs_lr, tau_lr, "LogisticRegression", provenance="held_out")
     results["Logistic Regression"] = metrics_lr
 
 
@@ -157,7 +157,7 @@ def run_baselines(
     tau_rf, _ = select_optimal_threshold(y_val, val_probs_rf)
     
     test_probs_rf = rf.predict_proba(X_test_scaled)[:, 1]
-    metrics_rf = evaluate_model(y_test, test_probs_rf, tau_rf, "RandomForest", provenance="baseline")
+    metrics_rf = evaluate(y_test, test_probs_rf, tau_rf, "RandomForest", provenance="held_out")
     results["Random Forest"] = metrics_rf
 
     return results

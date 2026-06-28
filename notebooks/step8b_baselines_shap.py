@@ -35,12 +35,13 @@ try:
     )
     
     print("\n--- Baseline Results (Test 2023-2024) ---")
-    metrics = ["ROC-AUC", "PR-AUC", "F1 Score", "MCC", "FAR"]
     for model_name, res in baseline_results.items():
         print(f"\n{model_name}:")
-        for m in metrics:
-            print(f"  {m:10s} : {res.get(m, np.nan):.4f}")
-            
+        print(f"  ROC-AUC    : {res.roc_auc:.4f}")
+        print(f"  PR-AUC     : {res.pr_auc:.4f}")
+        print(f"  F1 Score   : {res.f1:.4f}")
+        print(f"  MCC        : {res.mcc:.4f}")
+        print(f"  FAR        : {res.far:.4f}")
 except NameError as e:
     print(f"Error: Required variables not found in memory ({e}).")
     print("Please ensure you have run the main pipeline (Step 7) before this cell.")

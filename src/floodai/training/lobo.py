@@ -19,6 +19,7 @@ import pandas as pd
 from sklearn.preprocessing import RobustScaler
 
 from floodai.evaluation.metrics import DataProvenance, EvaluationResult, evaluate
+from floodai.features.governance import assert_no_forbidden_columns
 from floodai.models.xgb_model import build_xgb_classifier, fit_with_validation
 from floodai.training.imbalance import resample_training_only
 from floodai.training.threshold import select_f1_optimal_threshold
@@ -46,6 +47,8 @@ def run_lobo_cv(
     basins = sorted(df[basin_column].unique())
     if len(basins) < 2:
         raise ValueError("LOBO requires at least 2 basins; got 1. Cannot leave one out of a singleton set.")
+
+    assert_no_forbidden_columns(feature_columns)  # see features/governance.py — Year-leakage incident
 
     results: list[EvaluationResult] = []
     for held_out in basins:

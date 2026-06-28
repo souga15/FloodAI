@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floodai"
+version = "0.1.0"
+description = "Leakage-free, basin-scale flood occurrence prediction framework"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,126 @@
+# =============================================================================
+# FloodAI configuration — flood OCCURRENCE pipeline (v0.1)
+# Every parameter that affects a result lives here, not in code.
+# Edit this file to rerun with different settings; never hard-code in src/.
+# =============================================================================
+
+experiment:
+  id: "floodai_occurrence_v0.1"
+  description: >
+    Flood occurrence prediction across Ganga (Bihar), Brahmaputra (Assam),
+    and Mahanadi (Odisha) basins using IMD gridded rainfall and terrain
+    covariates. Held-out-only reporting.
+  random_seed: 42
+  output_dir: "results/floodai_occurrence_v0.1"
+
+# -----------------------------------------------------------------------------
+# Study basins. Each basin gets a bounding box (for clipping gridded rainfall
+# and DEM) and a representative set of distributed sub-district points.
+# Point lists are generated programmatically (see gis/points.py) from
+# administrative centroids within the bounding box — NOT hand-picked, so the
+# selection is reproducible and auditable. n_points is a target; the actual
+# count depends on how many valid grid-covered centroids fall in the box.
+# -----------------------------------------------------------------------------
+basins:
+  ganga_bihar:
+    label: "Ganga Basin — Bihar"
+    bbox: { lat_min: 24.3, lat_max: 27.5, lon_min: 83.3, lon_max: 88.0 }
+    n_points_target: 70
+    tier_prior: 1   # documented prior from WPT-D-26-00166; re-evaluated empirically, not assumed
+  brahmaputra_assam:
+    label: "Brahmaputra Basin — Assam"
+    bbox: { lat_min: 24.0, lat_max: 28.0, lon_min: 89.5, lon_max: 96.5 }
+    n_points_target: 70
+    tier_prior: 1
+  mahanadi_odisha:
+    label: "Mahanadi Basin — Odisha"
+    bbox: { lat_min: 19.0, lat_max: 23.5, lon_min: 81.5, lon_max: 87.5 }
+    n_points_target: 60
+    tier_prior: 3   # documented prior: reservoir/cyclone-driven, expected to be the hard case
+
+# -----------------------------------------------------------------------------
+# Data sources. Each entry names exactly one provider and is swappable —
+# the ingestion module dispatches on `provider`, nothing else.
+# -----------------------------------------------------------------------------
+data_sources:
+  rainfall:
+    provider: "imd_gridded_0p25"
+    variable: "rain"
+    start_year: 2017
+    end_year: 2024
+    citation: "Pai et al. (2014), MAUSAM 65(1):1-18"
+  dem:
+    provider: "srtm_30m"
+    citation: "NASA JPL SRTM v3, 2013"
+  flood_events:
+    provider: "manual_curated_csv"
+    path: "data/flood_events_basins.csv"
+    sources_allowed: ["CWC", "DFO", "EM-DAT"]
+    # NOTE: "News" was an allowed source in the WPT-D-26-00166 dataset.
+    # It is EXCLUDED here — single-newspaper-sourced event windows are not
+    # independently verifiable and are a known weak point flagged in v0.1
+    # review. Only CWC/DFO/EM-DAT entries are used for new labelling.
+
+# -----------------------------------------------------------------------------
+# Temporal split — identical logic to WPT-D-26-00166, carried forward because
+# it was correct there. No shuffling across year boundaries.
+# -----------------------------------------------------------------------------
+split:
+  train_years: [2017, 2018, 2019, 2020]
+  val_years:   [2021, 2022]
+  test_years:  [2023, 2024]
+
+# -----------------------------------------------------------------------------
+# Leave-One-Basin-Out validation — only 3 folds (one per basin), so this is
+# necessarily a coarser check than the original 10-state LOSO. Reported
+# alongside temporal results, never as a replacement for them.
+# -----------------------------------------------------------------------------
+loso:
+  enabled: true
+  fold_unit: "basin"
+
+# -----------------------------------------------------------------------------
+# Class imbalance handling
+# -----------------------------------------------------------------------------
+imbalance:
+  method: "smote"
+  sampling_strategy: 0.10
+  k_neighbors_max: 5
+  apply_to: "train_only"   # enforced in code; this flag exists for audit/logging only
+
+# -----------------------------------------------------------------------------
+# Model + hyperparameter search
+# -----------------------------------------------------------------------------
+model:
+  algorithm: "xgboost"
+  optuna:
+    n_trials: 50
+    direction: "maximize"
+    objective_metric: "average_precision"  # on validation set
+    search_space:
+      n_estimators: { low: 100, high: 300 }
+      max_depth: { low: 3, high: 5 }
+      learning_rate: { low: 0.01, high: 0.10, log: true }
+      subsample: { low: 0.50, high: 0.70 }
+      colsample_bytree: { low: 0.45, high: 0.65 }
+      min_child_weight: { low: 20, high: 50 }
+      gamma: { low: 0.3, high: 1.5 }
+      reg_alpha: { low: 0.5, high: 5.0 }
+      reg_lambda: { low: 2.0, high: 8.0 }
+  early_stopping_rounds: 25  # XGBoost 2.x: constructor-level, not .fit() — see src/floodai/models/xgb_model.py docstring
+  decision_threshold:
+    method: "maximize_f1_on_validation"
+
+# -----------------------------------------------------------------------------
+# Reporting policy — this section exists specifically to prevent the
+# train-inclusive-bootstrap issue found in the prior WPT-D-26-00166 notebook.
+# evaluation/metrics.py enforces this programmatically, not just by convention.
+# -----------------------------------------------------------------------------
+reporting:
+  headline_metric_source: "test_set_only"   # hard constraint, checked at runtime
+  forbid_train_inclusive_headline: true
+  bootstrap:
+    enabled: true
+    n_resamples: 1000
+    resample_from: "test_set_only"          # never "full_dataset"
+    purpose: "confidence_interval_on_test_metric"  # not a separate headline number

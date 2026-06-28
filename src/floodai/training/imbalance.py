@@ -34,6 +34,16 @@ def resample_training_only(
         )
         return X_train, y_train
 
+    n_negative = int(np.sum(y_train == 0))
+    natural_ratio = float(n_positive) / float(n_negative) if n_negative > 0 else 1.0
+    if natural_ratio >= sampling_strategy:
+        logger.warning(
+            "Natural positive ratio (%.3f) is already >= sampling_strategy (%.3f). "
+            "Skipping SMOTE to prevent imblearn downsampling errors.",
+            natural_ratio, sampling_strategy
+        )
+        return X_train, y_train
+
     k = min(k_neighbors_max, n_positive - 1)
     smote = SMOTE(random_state=seed, k_neighbors=k, sampling_strategy=sampling_strategy)
     X_res, y_res = smote.fit_resample(X_train, y_train)

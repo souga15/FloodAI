@@ -1,23 +1,21 @@
 """
 Real terrain feature join: per-point Curve Number from ISRIC SoilGrids +
-real TWI from pysheds flow routing on SRTM DEM tiles.
+real TWI from pysheds flow routing on an Open-Elevation API grid DEM.
 
-Data sources (all open access, no API key required):
+Data sources (all open access, NO API key required):
   - Soil data: ISRIC SoilGrids REST API v2 (https://rest.isric.org)
-    clay content + sand content at 0-30cm depth → Hydrologic Soil Group
-  - Land cover: ESA WorldCover 2021 via STAC API (10m, free)
-    → land cover class per point → CN lookup table
-  - DEM: SRTM 30m via `elevation` Python package (NASA CGIAR SRTM v4)
-    → pysheds flow direction + accumulation → real TWI per point
+    clay + sand content at 0-30cm depth -> Hydrologic Soil Group -> CN
+  - Elevation/TWI: Open-Elevation API (SRTM data) queried on a dense
+    0.05 degree grid per basin -> pysheds D8 flow routing -> real TWI
+    No system tools (gdal/make) needed, unlike the `elevation` package.
 
-CN lookup table source: USDA-NRCS TR-55 (1986), Table 2-2.
+CN lookup table: USDA-NRCS TR-55 (1986), Table 2-2.
 HSG classification: USDA NRCS, Part 630 Hydrology, Chapter 7.
 """
 from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -27,18 +25,9 @@ import requests
 logger = logging.getLogger("floodai.gis.terrain_real")
 
 # ---------------------------------------------------------------------------
-# Hydrologic Soil Group classification from clay + sand content
-# Based on USDA NRCS Part 630, Chapter 7 (texture-based approximation)
+# Hydrologic Soil Group from clay + sand content (USDA NRCS Part 630 Ch.7)
 # ---------------------------------------------------------------------------
 def classify_hsg(clay_pct: float, sand_pct: float) -> str:
-    """
-    Classify into Hydrologic Soil Group A/B/C/D from texture.
-    Uses the USDA texture-triangle approximation:
-      A: High sand (>70%), low clay (<10%) — high infiltration
-      D: High clay (>40%) — very low infiltration
-      C: Moderately high clay (25-40%)
-      B: Everything else
-    """
     if clay_pct > 40:
         return "D"
     elif clay_pct > 25:
@@ -49,12 +38,8 @@ def classify_hsg(clay_pct: float, sand_pct: float) -> str:
         return "B"
 
 
-# CN lookup: HSG × land cover category
-# Land cover categories from ESA WorldCover (simplified to TR-55 classes):
-# 10=Tree cover, 20=Shrubland, 30=Grassland, 40=Cropland, 50=Built-up,
-# 60=Bare/sparse, 70=Snow, 80=Water, 90=Wetland, 95=Mangrove
+# CN lookup: land cover x HSG (USDA TR-55 Table 2-2)
 CN_TABLE: dict[str, dict[str, int]] = {
-    # TR-55 Table 2-2 CN values by land use and HSG
     "cropland":  {"A": 67, "B": 78, "C": 85, "D": 89},
     "grassland": {"A": 30, "B": 58, "C": 71, "D": 78},
     "forest":    {"A": 36, "B": 60, "C": 73, "D": 79},
@@ -66,18 +51,18 @@ CN_TABLE: dict[str, dict[str, int]] = {
 
 ESA_TO_CN_CLASS: dict[int, str] = {
     10: "forest", 20: "forest", 30: "grassland", 40: "cropland",
-    50: "urban", 60: "bare", 70: "bare", 80: "water",
+    50: "urban",  60: "bare",   70: "bare",       80: "water",
     90: "wetland", 95: "wetland", 100: "bare",
 }
 
-
 # ---------------------------------------------------------------------------
-# ISRIC SoilGrids API
+# ISRIC SoilGrids API — per-point soil texture -> HSG -> CN
 # ---------------------------------------------------------------------------
 SOILGRIDS_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
 
+
 def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
-    """Fetch clay and sand content (%) at 0-30cm from ISRIC SoilGrids."""
+    """Fetch clay and sand (%) at 0-30cm from ISRIC SoilGrids."""
     params = {
         "lon": lon, "lat": lat,
         "property": ["clay", "sand"],
@@ -87,168 +72,181 @@ def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
     try:
         resp = requests.get(SOILGRIDS_URL, params=params, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
-        props = data.get("properties", {}).get("layers", [])
         result = {}
-        for layer in props:
-            name = layer["name"]  # "clay" or "sand"
-            depths = layer.get("depths", [])
-            values = [d["values"].get("mean") for d in depths if d["values"].get("mean") is not None]
-            if values:
-                # Convert from SoilGrids units (g/kg * 10 = ‰) to percent
-                result[name] = float(np.mean(values)) / 10.0
-        return result if result else None
+        for layer in resp.json().get("properties", {}).get("layers", []):
+            name = layer["name"]
+            vals = [d["values"].get("mean") for d in layer.get("depths", [])
+                    if d["values"].get("mean") is not None]
+            if vals:
+                result[name] = float(np.mean(vals)) / 10.0  # g/kg -> %
+        return result or None
     except Exception as exc:
-        logger.debug("SoilGrids fetch failed for (%.4f, %.4f): %s", lat, lon, exc)
+        logger.debug("SoilGrids failed (%.4f, %.4f): %s", lat, lon, exc)
         return None
 
 
 def get_per_point_cn(points_df: pd.DataFrame, lc_col: Optional[str] = None) -> pd.Series:
-    """
-    Compute per-point Curve Number from ISRIC SoilGrids soil data.
-    Falls back to regional defaults if API fails for a point.
-    lc_col: column in points_df with ESA WorldCover class (optional).
-             If not provided, uses 'cropland' as default land cover
-             (conservative mid-range estimate for Indian river basins).
-    """
+    """Per-point CN from ISRIC SoilGrids. Falls back to basin defaults."""
     basin_defaults = {"ganga_bihar": "B", "brahmaputra_assam": "B", "mahanadi_odisha": "C"}
     cn_series = pd.Series(np.nan, index=points_df.index, dtype=float)
-
-    logger.info("Fetching per-point soil data from ISRIC SoilGrids for %d points...", len(points_df))
     n_api, n_fallback = 0, 0
 
+    logger.info("Fetching per-point CN from ISRIC SoilGrids (%d points)...", len(points_df))
     for idx, row in points_df.iterrows():
-        # Land cover class
-        if lc_col and lc_col in points_df.columns:
-            esa_class = int(row[lc_col])
-            lc_name = ESA_TO_CN_CLASS.get(esa_class, "cropland")
-        else:
-            lc_name = "cropland"  # conservative default
-
-        # Soil data → HSG
+        lc_name = ESA_TO_CN_CLASS.get(int(row[lc_col]), "cropland") if lc_col and lc_col in points_df.columns else "cropland"
         soil = fetch_soil_properties(row["lat"], row["lon"])
-        time.sleep(0.15)  # polite rate limiting for ISRIC API
-
+        time.sleep(0.15)
         if soil and "clay" in soil and "sand" in soil:
             hsg = classify_hsg(soil["clay"], soil["sand"])
             n_api += 1
         else:
-            hsg = basin_defaults.get(row.get("basin_key", ""), "B")
+            hsg = basin_defaults.get(str(row.get("basin_key", "")), "B")
             n_fallback += 1
-
         cn_series[idx] = CN_TABLE.get(lc_name, CN_TABLE["cropland"])[hsg]
 
-    logger.info(
-        "Per-point CN complete: %d from SoilGrids API, %d from basin defaults. "
-        "CN range: %.0f–%.0f",
-        n_api, n_fallback, cn_series.min(), cn_series.max()
-    )
+    logger.info("CN complete: %d API, %d defaults. Range: %.0f-%.0f",
+                n_api, n_fallback, cn_series.min(), cn_series.max())
     return cn_series
 
 
 # ---------------------------------------------------------------------------
-# Real TWI from pysheds + SRTM
+# TWI from Open-Elevation grid + pysheds (no API key, no system tools)
 # ---------------------------------------------------------------------------
+OPEN_ELEVATION_URL = "https://api.open-elevation.com/api/v1/lookup"
+BATCH_SIZE = 100
+
+
+def _fetch_elevations_batch(latlons: list[tuple[float, float]]) -> list[float]:
+    payload = {"locations": [{"latitude": lat, "longitude": lon} for lat, lon in latlons]}
+    for attempt in range(3):
+        try:
+            resp = requests.post(OPEN_ELEVATION_URL, json=payload, timeout=30)
+            resp.raise_for_status()
+            return [r["elevation"] for r in resp.json()["results"]]
+        except Exception as exc:
+            logger.warning("Open-Elevation batch attempt %d failed: %s", attempt + 1, exc)
+            time.sleep(2.0 * (attempt + 1))
+    return [0.0] * len(latlons)
+
+
+def _build_basin_dem(lat_min: float, lat_max: float,
+                     lon_min: float, lon_max: float,
+                     resolution_deg: float = 0.05) -> tuple[np.ndarray, dict]:
+    """
+    Query Open-Elevation API on a regular grid to build a basin DEM array.
+    Resolution 0.05 deg (~5km). Returns (dem_array_northup, grid_info).
+    """
+    lats = np.arange(lat_min, lat_max + resolution_deg / 2, resolution_deg)
+    lons = np.arange(lon_min, lon_max + resolution_deg / 2, resolution_deg)
+    grid_latlons = [(lat, lon) for lat in lats for lon in lons]
+
+    logger.info("Querying Open-Elevation for basin DEM: %d x %d = %d points...",
+                len(lats), len(lons), len(grid_latlons))
+
+    elevations = []
+    for i in range(0, len(grid_latlons), BATCH_SIZE):
+        batch = grid_latlons[i: i + BATCH_SIZE]
+        elevations.extend(_fetch_elevations_batch(batch))
+        if i + BATCH_SIZE < len(grid_latlons):
+            time.sleep(0.3)
+
+    elev_arr = np.array(elevations, dtype=float).reshape(len(lats), len(lons))
+    elev_arr = np.flipud(elev_arr)  # row 0 = northernmost
+
+    return elev_arr, {"lats": lats, "lons": lons, "res": resolution_deg,
+                      "lat_min": lat_min, "lat_max": lat_max,
+                      "lon_min": lon_min, "lon_max": lon_max}
+
+
+def _sample_grid(grid_arr: np.ndarray, info: dict, lat: float, lon: float) -> float:
+    """Nearest-neighbour sample of a grid array at a lat/lon."""
+    lats_flip = np.flipud(info["lats"])
+    r = int(np.argmin(np.abs(lats_flip - lat)))
+    c = int(np.argmin(np.abs(info["lons"] - lon)))
+    r = int(np.clip(r, 0, grid_arr.shape[0] - 1))
+    c = int(np.clip(c, 0, grid_arr.shape[1] - 1))
+    return float(grid_arr[r, c])
+
+
 def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -> pd.Series:
     """
-    Compute real Topographic Wetness Index per point using pysheds + SRTM 30m DEM.
-
-    Downloads SRTM tiles via the `elevation` package (NASA CGIAR SRTM v4),
-    clips to each basin bounding box, runs D8 flow direction + accumulation,
-    then samples TWI at each point location.
-
-    Requires: pip install pysheds elevation rasterio
+    Real TWI per point using pysheds on an Open-Elevation API grid DEM.
+    No API key, no GDAL/make system tools required.
+    Resolution: 0.05 deg (~5km) — real spatial variation within each basin.
+    Requires: pip install pysheds affine
     """
     try:
-        import elevation
         from pysheds.grid import Grid
-        import rasterio
-        from rasterio.transform import rowcol
+        from pysheds.view import Raster, ViewFinder
+        import affine as affine_lib
     except ImportError as exc:
-        raise RuntimeError(
-            "Real TWI requires pysheds, elevation, and rasterio. "
-            "Run: !pip install pysheds elevation rasterio"
-        ) from exc
+        raise RuntimeError("Run: !pip install pysheds affine") from exc
 
-    dem_dir = Path(dem_cache_dir)
-    dem_dir.mkdir(parents=True, exist_ok=True)
     twi_series = pd.Series(np.nan, index=points_df.index, dtype=float)
+    res = 0.05
 
     for basin in points_df["basin_key"].unique():
         mask = points_df["basin_key"] == basin
-        basin_pts = points_df[mask]
+        basin_pts = points_df[mask].copy().reset_index()  # keep orig index
 
-        lat_min = basin_pts["lat"].min() - 0.1
-        lat_max = basin_pts["lat"].max() + 0.1
-        lon_min = basin_pts["lon"].min() - 0.1
-        lon_max = basin_pts["lon"].max() + 0.1
+        lat_min = basin_pts["lat"].min() - 0.15
+        lat_max = basin_pts["lat"].max() + 0.15
+        lon_min = basin_pts["lon"].min() - 0.15
+        lon_max = basin_pts["lon"].max() + 0.15
 
-        dem_path = dem_dir / f"{basin}_srtm.tif"
-        if not dem_path.exists():
-            logger.info("Downloading SRTM DEM for basin '%s' (%.1f°×%.1f° box)...",
-                        basin, lat_max - lat_min, lon_max - lon_min)
-            elevation.clip(
-                bounds=(lon_min, lat_min, lon_max, lat_max),
-                output=str(dem_path),
-                product="SRTM3",
+        elev_arr, info = _build_basin_dem(lat_min, lat_max, lon_min, lon_max, res)
+        cellsize_m = res * 111_000
+
+        # Build pysheds Raster
+        aff = affine_lib.Affine(res, 0, lon_min, 0, -res, lat_max)
+        vf = ViewFinder(affine=aff, shape=elev_arr.shape, nodata=-9999.0)
+        dem_raster = Raster(elev_arr.copy(), viewfinder=vf)
+        grid = Grid(viewfinder=vf)
+
+        # Condition DEM
+        try:
+            conditioned = grid.resolve_flats(
+                grid.fill_depressions(grid.fill_pits(dem_raster))
             )
-            elevation.clean()
+        except Exception as exc:
+            logger.warning("DEM conditioning failed for '%s': %s", basin, exc)
+            conditioned = dem_raster
 
-        logger.info("Computing TWI for basin '%s' using pysheds...", basin)
-        grid = Grid.from_raster(str(dem_path))
-        dem = grid.read_raster(str(dem_path))
-
-        # Condition DEM (fill pits, resolve flats)
-        pit_filled = grid.fill_pits(dem)
-        flooded = grid.fill_depressions(pit_filled)
-        inflated = grid.resolve_flats(flooded)
-
-        # Flow direction (D8)
+        # Flow routing
         dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
-        fdir = grid.flowdir(inflated, dirmap=dirmap)
+        try:
+            fdir = grid.flowdir(conditioned, dirmap=dirmap)
+            acc_arr = np.array(grid.accumulation(fdir, dirmap=dirmap), dtype=float)
+        except Exception as exc:
+            logger.warning("Flow routing failed for '%s': %s — uniform acc", basin, exc)
+            acc_arr = np.ones_like(elev_arr, dtype=float)
 
-        # Flow accumulation (specific catchment area proxy)
-        acc = grid.accumulation(fdir, dirmap=dirmap)
+        # Slope and TWI
+        gy, gx = np.gradient(np.array(conditioned, dtype=float), cellsize_m)
+        slope_rad = np.clip(np.arctan(np.sqrt(gx**2 + gy**2)), 0.001, np.pi / 2)
+        twi_grid = np.clip(
+            np.log((acc_arr * cellsize_m**2 + 1.0) / np.tan(slope_rad)),
+            0, 30
+        )
 
-        # Slope from DEM gradient
-        cellsize_deg = abs(grid.affine[0])
-        cellsize_m = cellsize_deg * 111_000
-        gy, gx = np.gradient(np.array(inflated), cellsize_m)
-        slope_rad = np.arctan(np.sqrt(gx**2 + gy**2))
-        slope_rad = np.clip(slope_rad, 0.001, np.pi / 2)
+        # Sample at each point
+        for _, row in basin_pts.iterrows():
+            orig_idx = row["index"]
+            twi_series[orig_idx] = _sample_grid(twi_grid, info, row["lat"], row["lon"])
 
-        # TWI = ln(a / tan(beta)), a = acc * cell_area
-        cell_area_m2 = cellsize_m ** 2
-        acc_arr = np.array(acc, dtype=float)
-        twi_grid = np.log((acc_arr * cell_area_m2 + 1) / np.tan(slope_rad))
-
-        # Sample TWI at each point in this basin
-        with rasterio.open(str(dem_path)) as src:
-            transform = src.transform
-            for idx, row in basin_pts.iterrows():
-                try:
-                    r, c = rowcol(transform, row["lon"], row["lat"])
-                    r = int(np.clip(r, 0, twi_grid.shape[0] - 1))
-                    c = int(np.clip(c, 0, twi_grid.shape[1] - 1))
-                    twi_series[idx] = float(twi_grid[r, c])
-                except Exception:
-                    twi_series[idx] = np.nan
-
-        logger.info("Basin '%s' TWI range: %.2f–%.2f",
-                    basin, twi_series[mask].min(), twi_series[mask].max())
+        logger.info("Basin '%s' TWI: %.2f-%.2f (mean=%.2f)",
+                    basin, twi_series[mask].min(),
+                    twi_series[mask].max(), twi_series[mask].mean())
 
     n_nan = twi_series.isna().sum()
     if n_nan:
         twi_series.fillna(twi_series.median(), inplace=True)
-        logger.warning("Filled %d NaN TWI values with median.", n_nan)
-
-    logger.info("Real TWI computation complete. Overall range: %.2f–%.2f",
-                twi_series.min(), twi_series.max())
+        logger.warning("Filled %d NaN TWI with median.", n_nan)
     return twi_series
 
 
 # ---------------------------------------------------------------------------
-# Main entry: drop-in replacement for terrain_join.add_terrain_features
+# Main entry point
 # ---------------------------------------------------------------------------
 def add_real_terrain_features(
     df: pd.DataFrame,
@@ -256,61 +254,50 @@ def add_real_terrain_features(
     dem_cache_dir: str = "/content/dem_cache",
 ) -> pd.DataFrame:
     """
-    Full real terrain join:
-      1. Elevation from Open-Elevation (already real SRTM data)
-      2. Per-point CN from ISRIC SoilGrids + TR-55 lookup
-      3. Real TWI from pysheds + SRTM DEM rasters
-      4. CN_Runoff_Q, interaction columns
-
-    Takes ~10-15 min in Colab (SoilGrids: ~30s for 205 points,
-    SRTM download: ~2-3 min per basin, pysheds: ~1 min per basin).
+    Full real terrain join (no API key needed):
+      1. Elevation: Open-Elevation API (real SRTM values)
+      2. CN: ISRIC SoilGrids per-point soil texture -> HSG -> TR-55 CN
+      3. TWI: Open-Elevation grid DEM -> pysheds D8 flow routing
+      4. Derived: CN_Runoff_Q, interaction features
     """
     from floodai.gis.terrain_join import fetch_elevations, compute_cn_runoff
 
     df = df.copy()
 
-    # ---- Step 1: Elevation (already real SRTM via Open-Elevation API) ----
+    # Step 1: Elevation
     if "Elevation_m" not in points_df.columns:
         logger.info("Fetching SRTM elevations via Open-Elevation API...")
-        elev_series = fetch_elevations(points_df)
-        points_df = points_df.copy()
-        points_df["Elevation_m"] = elev_series.values
-
+        pts = points_df.copy()
+        pts["Elevation_m"] = fetch_elevations(points_df).values
+        points_df = pts
     elev_map = points_df.set_index("point_id")["Elevation_m"]
     df["Elevation_m"] = df["point_id"].map(elev_map)
 
-    # ---- Step 2: Per-point Curve Number from ISRIC SoilGrids -----------
-    logger.info("Step 2: Fetching per-point soil data from ISRIC SoilGrids...")
+    # Step 2: Per-point CN from ISRIC SoilGrids
+    logger.info("Step 2: Per-point CN from ISRIC SoilGrids...")
     cn_series = get_per_point_cn(points_df)
     pid_to_cn = dict(zip(points_df["point_id"], cn_series.values))
     df["Curve_Number"] = df["point_id"].map(pid_to_cn).astype(float)
 
-    # ---- Step 3: Real TWI from pysheds + SRTM rasters ------------------
-    logger.info("Step 3: Computing real TWI from SRTM DEM via pysheds...")
+    # Step 3: Real TWI
+    logger.info("Step 3: Real TWI via Open-Elevation grid + pysheds...")
     twi_series = compute_real_twi(points_df, dem_cache_dir=dem_cache_dir)
     pid_to_twi = dict(zip(points_df["point_id"], twi_series.values))
     df["TWI"] = df["point_id"].map(pid_to_twi)
 
-    # ---- Step 4: SCS-CN Runoff Q ----------------------------------------
+    # Step 4: Runoff and interaction features
     rain_col = "Rainfall_7Day_mm" if "Rainfall_7Day_mm" in df.columns else "Rainfall_mm"
     df["CN_Runoff_Q"] = compute_cn_runoff(df[rain_col].fillna(0), df["Curve_Number"])
+    elev_c = df["Elevation_m"].clip(lower=0.1).fillna(df["Elevation_m"].median())
+    df["Elevation_Rain_Ratio"]   = df["Rainfall_mm"].fillna(0) / elev_c
+    df["Elevation_Rain30_Ratio"] = df.get("Rainfall_30Day_mm", df["Rainfall_mm"]).fillna(0) / elev_c
+    df["Low_Elev_Heavy_Rain"]    = ((df["Elevation_m"].fillna(999) < 100).astype(float) *
+                                    (df["Rainfall_mm"].fillna(0) > 50).astype(float))
+    df["CN_Rain_Interaction"]    = df["Curve_Number"] * df[rain_col].fillna(0)
+    df["TWI_Rain_Interaction"]   = df["TWI"].fillna(0) * df[rain_col].fillna(0)
 
-    # ---- Step 5: Interaction features ------------------------------------
-    elev_clipped = df["Elevation_m"].clip(lower=0.1).fillna(df["Elevation_m"].median())
-    df["Elevation_Rain_Ratio"] = df["Rainfall_mm"].fillna(0) / elev_clipped
-    df["Elevation_Rain30_Ratio"] = df.get("Rainfall_30Day_mm", df["Rainfall_mm"]).fillna(0) / elev_clipped
-    df["Low_Elev_Heavy_Rain"] = (
-        (df["Elevation_m"].fillna(999) < 100).astype(float) *
-        (df["Rainfall_mm"].fillna(0) > 50).astype(float)
-    )
-    df["CN_Rain_Interaction"]  = df["Curve_Number"] * df[rain_col].fillna(0)
-    df["TWI_Rain_Interaction"] = df["TWI"].fillna(0) * df[rain_col].fillna(0)
-
-    logger.info(
-        "Real terrain join complete. Features: Elevation %.0f–%.0f m | "
-        "CN %.0f–%.0f | TWI %.2f–%.2f",
-        df["Elevation_m"].min(), df["Elevation_m"].max(),
-        df["Curve_Number"].min(), df["Curve_Number"].max(),
-        df["TWI"].min(), df["TWI"].max(),
-    )
+    logger.info("Real terrain join complete. Elevation %.0f-%.0f m | CN %.0f-%.0f | TWI %.2f-%.2f",
+                df["Elevation_m"].min(), df["Elevation_m"].max(),
+                df["Curve_Number"].min(), df["Curve_Number"].max(),
+                df["TWI"].min(), df["TWI"].max())
     return df

@@ -72,6 +72,7 @@ ALLOWED_FEATURE_GROUPS: dict[str, list[str]] = {
         "Monsoon_Rain_Interaction", "Peak_Monsoon_Rain",
         "Humidity_Temp_Product", "Rain_Humidity_Product",
         "Soil_Monsoon_Interaction", "Low_Elev_Heavy_Rain",
+        "CN_Rain_Interaction", "TWI_Rain_Interaction",
     ],
 }
 

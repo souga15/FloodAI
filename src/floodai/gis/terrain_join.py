@@ -103,39 +103,35 @@ def fetch_elevations(points_df: pd.DataFrame) -> pd.Series:
 def compute_twi_proxy(elevation_series: pd.Series, points_df: pd.DataFrame) -> pd.Series:
     """
     TWI proxy using slope estimated from nearest-neighbour elevation differences
-    within the same basin.  Full TWI = ln(a / tan(beta)) requires flow-accumulation
-    grids (pysheds); this is a documented approximation logged as such.
-
-    For each point, slope proxy = std(elevation of same-basin points) / mean spacing.
-    This is a basin-level proxy, not point-level — it will improve once
-    local DEM tiles are available for pysheds-based flow routing.
+    within the same basin. Indexed by points_df.index (integer positions).
     """
-    twi_proxy = pd.Series(np.nan, index=points_df.index, dtype=float)
-    for basin in points_df["basin_key"].unique():
-        mask = points_df["basin_key"] == basin
-        basin_elevs = elevation_series[mask].dropna()
+    # Work entirely on a reset-index copy to avoid label/position mismatches
+    pts = points_df.reset_index(drop=True).copy()
+    elevs = elevation_series.reset_index(drop=True)
+
+    twi_proxy = pd.Series(np.nan, index=pts.index, dtype=float)
+    for basin in pts["basin_key"].unique():
+        mask = pts["basin_key"] == basin          # boolean, same integer index as pts
+        basin_elevs = elevs[mask].dropna()
         if len(basin_elevs) < 2:
             continue
         elev_std = basin_elevs.std()
-        elev_mean = basin_elevs.mean()
-        # Approximate spacing (degrees → m, rough conversion at Indian latitudes)
-        lat_mean = points_df.loc[mask, "lat"].mean()
+        lat_mean = pts.loc[mask, "lat"].mean()
         deg_to_m = 111_000 * np.cos(np.radians(lat_mean))
-        lat_span = points_df.loc[mask, "lat"].max() - points_df.loc[mask, "lat"].min()
-        lon_span = points_df.loc[mask, "lon"].max() - points_df.loc[mask, "lon"].min()
+        lat_span = pts.loc[mask, "lat"].max() - pts.loc[mask, "lat"].min()
+        lon_span = pts.loc[mask, "lon"].max() - pts.loc[mask, "lon"].min()
         spacing_m = max(1.0, np.sqrt((lat_span * 111_000)**2 + (lon_span * deg_to_m)**2) / max(1, len(basin_elevs)))
-        slope_proxy = elev_std / spacing_m if spacing_m > 0 else 1e-3
-        slope_proxy = max(slope_proxy, 1e-4)  # avoid log(0)
-        # TWI proxy = ln(1 / slope) — higher for flat (wetness accumulates)
+        slope_proxy = max(elev_std / spacing_m, 1e-4)
         twi_val = float(np.log(1.0 / slope_proxy))
         twi_proxy[mask] = twi_val
 
     logger.warning(
         "TWI values are a basin-level slope proxy (elevation std / spacing), NOT "
-        "full Beven-Kirkby TWI (which requires flow-accumulation grids). "
-        "Label as 'TWI_proxy' in any manuscript table until pysheds-based "
-        "flow routing is integrated."
+        "full Beven-Kirkby TWI. Label as 'TWI_proxy' in manuscript tables until "
+        "pysheds-based flow routing is integrated."
     )
+    # Re-index back to original points_df index
+    twi_proxy.index = points_df.index
     return twi_proxy
 
 

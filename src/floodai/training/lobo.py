@@ -68,9 +68,31 @@ def run_lobo_cv(
         X_tr_scaled = scaler.fit_transform(X_tr_full)
         X_te_scaled = scaler.transform(X_te)
 
-        X_tr_res, y_tr_res = resample_training_only(
-            X_tr_scaled, y_tr_full.values, smote_sampling_strategy, smote_k_neighbors_max, seed
-        )
+        # Guard: if the natural positive rate already meets or exceeds the
+        # sampling_strategy, SMOTE will raise a ValueError (it can only
+        # over-sample, not downsample). Skip it gracefully in that case.
+        n_pos_tr = int(y_tr_full.values.sum())
+        n_neg_tr = int((y_tr_full.values == 0).sum())
+        desired = int(smote_sampling_strategy * n_neg_tr)
+        if desired <= n_pos_tr:
+            logger.warning(
+                "Basin '%s' LOBO fold: desired SMOTE positives (%d) <= existing (%d). "
+                "Using original training data without resampling.",
+                held_out, desired, n_pos_tr,
+            )
+            X_tr_res, y_tr_res = X_tr_scaled, y_tr_full.values
+        else:
+            try:
+                X_tr_res, y_tr_res = resample_training_only(
+                    X_tr_scaled, y_tr_full.values, smote_sampling_strategy, smote_k_neighbors_max, seed
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Basin '%s' LOBO fold: SMOTE skipped (%s). "
+                    "Using original training data.",
+                    held_out, exc,
+                )
+                X_tr_res, y_tr_res = X_tr_scaled, y_tr_full.values
 
         split_idx = int(len(X_tr_res) * 0.85)
         model = build_xgb_classifier(best_params, early_stopping_rounds, seed)

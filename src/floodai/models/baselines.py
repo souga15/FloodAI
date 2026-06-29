@@ -17,7 +17,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import RobustScaler
 
-from floodai.evaluation.metrics import evaluate
+from floodai.evaluation.metrics import evaluate, DataProvenance
 from floodai.training.threshold import select_f1_optimal_threshold
 
 logger = logging.getLogger("floodai.models.baselines")
@@ -42,7 +42,7 @@ class ClimatologicalBaseline:
             raise ValueError("Climatological baseline requires 'basin_key' and 'Day_of_Year'.")
 
         df = X[["basin_key", "Day_of_Year"]].copy()
-        df["target"] = y.values
+        df["target"] = np.asarray(y)
 
         # Calculate raw daily rate per basin
         raw_rates = df.groupby(["basin_key", "Day_of_Year"])["target"].mean().reset_index()
@@ -116,10 +116,10 @@ def run_baselines(
     climatology.fit(raw_train_df, y_train)
     
     val_probs_clim = climatology.predict_proba(raw_val_df)[:, 1]
-    tau_clim, _ = select_optimal_threshold(y_val, val_probs_clim)
+    tau_clim = select_f1_optimal_threshold(np.asarray(y_val), val_probs_clim)
     
     test_probs_clim = climatology.predict_proba(raw_test_df)[:, 1]
-    metrics_clim = evaluate(y_test, test_probs_clim, tau_clim, "Climatological", provenance="held_out")
+    metrics_clim = evaluate(np.asarray(y_test), test_probs_clim, tau_clim, "Climatological", provenance=DataProvenance.HELD_OUT)
     results["Climatological"] = metrics_clim
 
 
@@ -134,10 +134,10 @@ def run_baselines(
     lr.fit(X_train_scaled, y_train)
     
     val_probs_lr = lr.predict_proba(X_val_scaled)[:, 1]
-    tau_lr, _ = select_optimal_threshold(y_val, val_probs_lr)
+    tau_lr = select_f1_optimal_threshold(np.asarray(y_val), val_probs_lr)
     
     test_probs_lr = lr.predict_proba(X_test_scaled)[:, 1]
-    metrics_lr = evaluate(y_test, test_probs_lr, tau_lr, "LogisticRegression", provenance="held_out")
+    metrics_lr = evaluate(np.asarray(y_test), test_probs_lr, tau_lr, "LogisticRegression", provenance=DataProvenance.HELD_OUT)
     results["Logistic Regression"] = metrics_lr
 
 
@@ -154,10 +154,10 @@ def run_baselines(
     rf.fit(X_train_scaled, y_train)
     
     val_probs_rf = rf.predict_proba(X_val_scaled)[:, 1]
-    tau_rf, _ = select_optimal_threshold(y_val, val_probs_rf)
+    tau_rf = select_f1_optimal_threshold(np.asarray(y_val), val_probs_rf)
     
     test_probs_rf = rf.predict_proba(X_test_scaled)[:, 1]
-    metrics_rf = evaluate(y_test, test_probs_rf, tau_rf, "RandomForest", provenance="held_out")
+    metrics_rf = evaluate(np.asarray(y_test), test_probs_rf, tau_rf, "RandomForest", provenance=DataProvenance.HELD_OUT)
     results["Random Forest"] = metrics_rf
 
     return results

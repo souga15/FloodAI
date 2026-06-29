@@ -146,12 +146,15 @@ def _fetch_dem_py3dep(
     if py3dep is None:
         return None
     try:
+        import warnings
         import xarray as xr
         bbox = (lon_min - 0.05, lat_min - 0.05, lon_max + 0.05, lat_max + 0.05)
         logger.info("py3dep: fetching DEM for bbox %s at %dm resolution...", bbox, resolution)
-        dem_ds = py3dep.get_map(
-            "DEM", bbox, resolution=resolution, geo_crs="EPSG:4326", crs="EPSG:4326"
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            dem_ds = py3dep.get_map(
+                "DEM", bbox, resolution=resolution, geo_crs="EPSG:4326", crs="EPSG:4326"
+            )
         # xarray DataArray -> numpy; lat decreasing (north-up)
         dem_arr = np.array(dem_ds, dtype=float)
         lats = np.array(dem_ds.y, dtype=float)
@@ -259,8 +262,13 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
 
         # Try py3dep (90m USGS 3DEP, 3 arc-second) first.
         # 30m is too large for Colab Free RAM on massive basins (~150,000 km^2). 90m uses 9x less RAM.
+        bbox_area = (lat_max - lat_min) * (lon_max - lon_min)
         try:
-            dem_result = _fetch_dem_py3dep(lat_min, lat_max, lon_min, lon_max, resolution=90)
+            if bbox_area > 10:
+                logger.warning("Basin '%s' area (%.1f sq deg) too large for Colab RAM. Skipping py3dep.", basin, bbox_area)
+                dem_result = None
+            else:
+                dem_result = _fetch_dem_py3dep(lat_min, lat_max, lon_min, lon_max, resolution=90)
         except MemoryError:
             logger.warning("Basin '%s': MemoryError during py3dep fetch. Too large for RAM.", basin)
             dem_result = None

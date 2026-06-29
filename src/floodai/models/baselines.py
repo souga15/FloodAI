@@ -51,8 +51,8 @@ class ClimatologicalBaseline:
         smoothed_rates = []
         for basin in raw_rates["basin_key"].unique():
             basin_data = raw_rates[raw_rates["basin_key"] == basin].set_index("Day_of_Year")
-            # Reindex to full year 1-366
-            basin_data = basin_data.reindex(range(1, 367)).fillna(0)
+            # Keep only the numeric target column before reindex
+            basin_data = basin_data[["target"]].reindex(range(1, 367)).fillna(0)
             
             # Pad for wraparound
             padded = pd.concat([
@@ -61,10 +61,11 @@ class ClimatologicalBaseline:
                 basin_data.iloc[:self.window_days]
             ])
             
-            smoothed = padded.rolling(window=2*self.window_days+1, center=True).mean()
+            smoothed = padded["target"].rolling(window=2*self.window_days+1, center=True).mean()
             smoothed = smoothed.iloc[self.window_days:-self.window_days]
             
             smoothed_df = smoothed.reset_index()
+            smoothed_df.columns = ["Day_of_Year", "target"]
             smoothed_df["basin_key"] = basin
             smoothed_rates.append(smoothed_df)
 

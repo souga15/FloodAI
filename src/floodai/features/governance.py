@@ -64,13 +64,19 @@ ALLOWED_FEATURE_GROUPS: dict[str, list[str]] = {
         "Heavy_Rain_Days_7D", "Extreme_Rain_Days_7D",
         "Consecutive_Dry_Days", "Soil_Moisture_Proxy", "Rainfall_Acceleration",
     ],
+    # Anomaly features remove the seasonal mean, forcing the model to learn
+    # *excess* rainfall rather than *what season it is*. Computed from
+    # training data only (see pipeline.compute_rainfall_climatology).
+    "rainfall_anomaly": [
+        "Rain_Anomaly", "Rain7D_Anomaly", "Rain30D_Anomaly",
+        "Rain_Intensity_Index", "Antecedent_Wet_Flag",
+    ],
     "terrain_physics": [
         "Elevation_m", "Curve_Number", "TWI", "CN_Runoff_Q",
     ],
     "interaction": [
         "Elevation_Rain_Ratio", "Elevation_Rain30_Ratio",
         "Monsoon_Rain_Interaction", "Peak_Monsoon_Rain",
-        "Humidity_Temp_Product", "Rain_Humidity_Product",
         "Soil_Monsoon_Interaction", "Low_Elev_Heavy_Rain",
         "CN_Rain_Interaction", "TWI_Rain_Interaction",
     ],

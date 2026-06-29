@@ -10,6 +10,7 @@ sys.path.insert(0, "/content/FloodAI/src")
 from floodai.data.rainfall_providers import get_rainfall_provider
 from floodai.features.pipeline import (
     add_temporal_features, add_rainfall_window_features,
+    compute_rainfall_climatology, add_rainfall_anomaly_features,
 )
 from floodai.config import load_config
 import logging
@@ -60,18 +61,17 @@ df = df.sort_values(["point_id", "Date"]).reset_index(drop=True)
 df = add_temporal_features(df)
 df = add_rainfall_window_features(df, group_col="point_id")
 
-# Create the missing feature columns since they aren't generated until the real terrain join
-feature_cols = [
-    'Month', 'Day_of_Year', 'Week_of_Year', 'Is_Monsoon_Season', 
-    'Is_Peak_Monsoon', 'Is_Pre_Monsoon', 'Is_Post_Monsoon', 
-    'Month_Sin', 'Month_Cos', 'Day_of_Year_Sin', 'Day_of_Year_Cos', 
-    'Rainfall_mm', 'Rainfall_3Day_mm', 'Rainfall_7Day_mm', 
-    'Rainfall_14Day_mm', 'Rainfall_30Day_mm', 'Rainfall_60Day_mm', 
-    'Rainfall_7Day_Avg', 'Rainfall_7Day_Max', 'Rainfall_7Day_Std', 
-    'Rainfall_30Day_Std', 'Heavy_Rain_Days_7D', 'Extreme_Rain_Days_7D', 
-    'Consecutive_Dry_Days', 'Soil_Moisture_Proxy', 'Rainfall_Acceleration',
-    'Elevation_m', 'Curve_Number', 'TWI', 'CN_Runoff_Q', 
-    'Elevation_Rain_Ratio', 'Elevation_Rain30_Ratio', 'Low_Elev_Heavy_Rain'
-]
+# Compute rainfall climatology from TRAINING YEARS ONLY to prevent leakage
+print("\n--- Step 4b: Computing Rainfall Climatology (train years only) ---")
+train_years = cfg.raw["split"]["train_years"]
+df_train_only = df[df["Date"].dt.year.isin(train_years)]
+rainfall_climatology = compute_rainfall_climatology(df_train_only)
+print(f"Climatology computed for {rainfall_climatology['basin_key'].nunique()} basins x "
+      f"{rainfall_climatology['Day_of_Year'].nunique()} days-of-year")
 
-print(f"Feature matrix built: {df.shape}")
+# Add anomaly features to the FULL dataset (using train-derived climatology)
+df = add_rainfall_anomaly_features(df, rainfall_climatology)
+
+print(f"\nFeature matrix built: {df.shape}")
+print(f"New anomaly columns: {[c for c in df.columns if 'Anomaly' in c or 'Wet_Flag' in c or 'Intensity' in c]}")
+

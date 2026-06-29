@@ -128,9 +128,9 @@ def run_baselines(
     # 2. Logistic Regression
     logger.info("--- Running Logistic Regression Baseline ---")
     scaler = RobustScaler()
-    X_train_scaled = scaler.fit_transform(X_train[feature_cols].fillna(0))
-    X_val_scaled = scaler.transform(X_val[feature_cols].fillna(0))
-    X_test_scaled = scaler.transform(X_test[feature_cols].fillna(0))
+    X_train_scaled = scaler.fit_transform(raw_train_df[feature_cols].fillna(0))
+    X_val_scaled = scaler.transform(raw_val_df[feature_cols].fillna(0))
+    X_test_scaled = scaler.transform(raw_test_df[feature_cols].fillna(0))
 
     lr = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42, n_jobs=-1)
     lr.fit(X_train_scaled, y_train)

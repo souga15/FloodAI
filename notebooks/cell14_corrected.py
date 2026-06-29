@@ -76,12 +76,12 @@ df_train = df[df['Date'].dt.year.isin(train_years)].copy()
 df_val   = df[df['Date'].dt.year.isin(val_years)].copy()
 df_test  = df[df['Date'].dt.year.isin(test_years)].copy()
 
-# CORRECTED: feature_cols now comes from the governed allowlist, not a
-# manually maintained exclude set. This is what keeps Year (and any future
-# leakage-risk column) out automatically.
-feature_cols = select_model_features(df)
+# EXCLUDE 'temporal' group! If the model has access to the calendar, it will take
+# the lazy shortcut and just predict based on season instead of physical rainfall.
+feature_groups = ["rainfall_current", "rainfall_windows", "rainfall_anomaly", "terrain_physics", "interaction"]
+feature_cols = select_model_features(df, groups=feature_groups)
 assert_no_forbidden_columns(feature_cols)
-print(f"\nSelected {len(feature_cols)} governed features (Year excluded by design):")
+print(f"\nSelected {len(feature_cols)} governed features (Year and Temporal excluded by design):")
 print(feature_cols)
 
 X_train, y_train = df_train[feature_cols].values, df_train['Flood_Occurred'].values

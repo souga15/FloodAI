@@ -61,11 +61,11 @@ print("="*50)
 
 try:
     run_shap_analysis(
-        model=model,  # The trained XGBoost model from Step 7
-        X_test=X_test, 
+        model=best_model,  # The trained XGBoost model from Step 7
+        X_test=X_test_scaled,
         feature_cols=feature_cols,
         output_dir="/content/floodai_outputs"
     )
 except NameError as e:
-    print(f"Error running SHAP ({e}). Did you run Step 7 to define 'model'?")
+    print(f"Error running SHAP ({e}). Did you run Step 7 to define 'best_model'?")
 

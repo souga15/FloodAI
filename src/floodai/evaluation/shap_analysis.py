@@ -30,13 +30,19 @@ def run_shap_analysis(
         return
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Subsample to speed up SHAP calculation if test set is large
-    if len(X_test) > 10000:
-        logger.info(f"Subsampling test set for SHAP from {len(X_test)} to 10000...")
-        X_sample = X_test[feature_cols].sample(n=10000, random_state=42).fillna(0)
+
+    # Handle both numpy arrays and DataFrames
+    if isinstance(X_test, np.ndarray):
+        X_test_df = pd.DataFrame(X_test, columns=feature_cols)
     else:
-        X_sample = X_test[feature_cols].fillna(0)
+        X_test_df = X_test[feature_cols].copy()
+
+    # Subsample to speed up SHAP calculation if test set is large
+    if len(X_test_df) > 10000:
+        logger.info(f"Subsampling test set for SHAP from {len(X_test_df)} to 10000...")
+        X_sample = X_test_df.sample(n=10000, random_state=42).fillna(0)
+    else:
+        X_sample = X_test_df.fillna(0)
 
     logger.info("Computing SHAP values using TreeExplainer...")
     explainer = shap.TreeExplainer(model)

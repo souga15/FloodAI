@@ -257,8 +257,14 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
         lon_min = basin_pts["lon"].min() - 0.15
         lon_max = basin_pts["lon"].max() + 0.15
 
-        # Try py3dep (30m USGS 3DEP) first, fall back to Open-Elevation (5km)
-        dem_result = _fetch_dem_py3dep(lat_min, lat_max, lon_min, lon_max, resolution=30)
+        # Try py3dep (90m USGS 3DEP, 3 arc-second) first.
+        # 30m is too large for Colab Free RAM on massive basins (~150,000 km^2). 90m uses 9x less RAM.
+        try:
+            dem_result = _fetch_dem_py3dep(lat_min, lat_max, lon_min, lon_max, resolution=90)
+        except MemoryError:
+            logger.warning("Basin '%s': MemoryError during py3dep fetch. Too large for RAM.", basin)
+            dem_result = None
+            
         if dem_result is None:
             logger.info("Basin '%s': falling back to Open-Elevation API for DEM.", basin)
             elev_arr, info = _build_basin_dem(lat_min, lat_max, lon_min, lon_max, res)

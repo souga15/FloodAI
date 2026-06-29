@@ -155,10 +155,6 @@ print(f"  TN={tn:>6}  FP={fp:>6}  FN={fn:>6}  TP={tp:>6}")
 print("="*55)
 
 # ── Step 12: Leave-One-Basin-Out (LOBO) cross-validation ───────────────────
-# CORRECTED: uses run_lobo_cv() from the package, which (a) calls
-# assert_no_forbidden_columns() internally, and (b) routes all SMOTE calls
-# through resample_training_only(), so the Year-leakage and SMOTE-ratio bugs
-# cannot recur in this step either.
 print("\nRunning LOBO cross-validation (governed)...")
 lobo_results = run_lobo_cv(
     df, feature_columns=feature_cols, target_column='Flood_Occurred',
@@ -171,15 +167,33 @@ lobo_results = run_lobo_cv(
 
 lobo_df = pd.DataFrame([{
     'held_out_basin': r.set_name.replace('LOBO_held_out_', ''),
-    'ROC_AUC': r.roc_auc, 'F1': r.f1, 'MCC': r.mcc, 'n_positive': r.n_positive,
+    'ROC_AUC': r.roc_auc, 'PR_AUC': r.pr_auc, 'F1': r.f1, 'MCC': r.mcc,
+    'n_test': r.n_total, 'n_positive': r.n_positive,
 } for r in lobo_results])
-print("\nLOBO Summary (provenance=loso_held_out — NOT a headline metric, see metrics.py):")
+
+# Save LOBO table for paper
+import os
+os.makedirs("/content/floodai_outputs", exist_ok=True)
+lobo_df.to_csv("/content/floodai_outputs/lobo_results.csv", index=False)
+
+print("\n" + "="*65)
+print("  LOBO CV RESULTS  (provenance=loso_held_out — supplemental only)")
+print("="*65)
 print(lobo_df.to_string(index=False))
 if len(lobo_df) > 0:
-    print(f"\nMean LOBO ROC-AUC : {lobo_df['ROC_AUC'].mean():.4f} +/- {lobo_df['ROC_AUC'].std():.4f}")
-    print(f"Mean LOBO F1      : {lobo_df['F1'].mean():.4f} +/- {lobo_df['F1'].std():.4f}")
-    print("\nNOTE: If ROC_AUC == 1.000 for every basin again, STOP and investigate")
-    print("      before reporting -- that pattern previously indicated leakage,")
-    print("      not genuine cross-basin generalization. Check feature_cols")
-    print("      above for anything that could identify a specific basin/year")
-    print("      rather than encode rainfall/terrain physics.")
+    print("-"*65)
+    print(f"  Mean ROC-AUC : {lobo_df['ROC_AUC'].mean():.4f} ± {lobo_df['ROC_AUC'].std():.4f}")
+    print(f"  Mean F1      : {lobo_df['F1'].mean():.4f} ± {lobo_df['F1'].std():.4f}")
+    print(f"  Mean MCC     : {lobo_df['MCC'].mean():.4f} ± {lobo_df['MCC'].std():.4f}")
+    print("="*65)
+    print(f"Saved: /content/floodai_outputs/lobo_results.csv")
+
+    # Leakage watchdog — AUC=1.000 across all basins was the prior leakage symptom
+    perfect_basins = lobo_df[lobo_df['ROC_AUC'] > 0.999]
+    if len(perfect_basins) > 0:
+        print("\n[!!!] WARNING: ROC_AUC = 1.000 detected for:", perfect_basins['held_out_basin'].tolist())
+        print("      This was the exact leakage symptom from the Year column. STOP and investigate.")
+        print("      Check that feature_cols above contains no identifier or year-correlated column.")
+    else:
+        print("\n[OK] No AUC=1.000 detected — no obvious leakage signal.")
+

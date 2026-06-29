@@ -1,13 +1,14 @@
 """
 Real terrain feature join: per-point Curve Number from ISRIC SoilGrids +
-real TWI from pysheds flow routing on an Open-Elevation API grid DEM.
+real TWI from pysheds flow routing on a py3dep (USGS 3DEP) DEM.
 
 Data sources (all open access, NO API key required):
   - Soil data: ISRIC SoilGrids REST API v2 (https://rest.isric.org)
     clay + sand content at 0-30cm depth -> Hydrologic Soil Group -> CN
-  - Elevation/TWI: Open-Elevation API (SRTM data) queried on a dense
-    0.05 degree grid per basin -> pysheds D8 flow routing -> real TWI
-    No system tools (gdal/make) needed, unlike the `elevation` package.
+  - Elevation/TWI: py3dep (USGS 3D Elevation Program, 1/3 arc-second ~10m)
+    queried per-basin bounding box -> numpy array -> pysheds D8 flow routing.
+    Falls back to Open-Elevation API if py3dep is unavailable.
+    No system tools (gdal/make) needed.
 
 CN lookup table: USDA-NRCS TR-55 (1986), Table 2-2.
 HSG classification: USDA NRCS, Part 630 Hydrology, Chapter 7.
@@ -87,7 +88,12 @@ def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
 
 def get_per_point_cn(points_df: pd.DataFrame, lc_col: Optional[str] = None) -> pd.Series:
     """Per-point CN from ISRIC SoilGrids. Falls back to basin defaults."""
-    basin_defaults = {"ganga_bihar": "B", "brahmaputra_assam": "B", "mahanadi_odisha": "C"}
+    basin_defaults = {
+        "ganga_bihar": "B",
+        "brahmaputra_assam": "B",
+        "mahanadi_odisha": "C",
+        "sutlej_punjab": "B",   # Punjab alluvial plains, sandy-loam soils (ICAR-NBSS 2021)
+    }
     cn_series = pd.Series(np.nan, index=points_df.index, dtype=float)
     n_api, n_fallback = 0, 0
 
@@ -110,10 +116,64 @@ def get_per_point_cn(points_df: pd.DataFrame, lc_col: Optional[str] = None) -> p
 
 
 # ---------------------------------------------------------------------------
-# TWI from Open-Elevation grid + pysheds (no API key, no system tools)
+# TWI from py3dep (USGS 3DEP, primary) or Open-Elevation (fallback)
 # ---------------------------------------------------------------------------
 OPEN_ELEVATION_URL = "https://api.open-elevation.com/api/v1/lookup"
 BATCH_SIZE = 100
+
+
+def _try_import_py3dep():
+    """Return py3dep module if available, else None."""
+    try:
+        import py3dep
+        return py3dep
+    except ImportError:
+        return None
+
+
+def _fetch_dem_py3dep(
+    lat_min: float, lat_max: float,
+    lon_min: float, lon_max: float,
+    resolution: int = 30,
+) -> tuple[np.ndarray, dict] | None:
+    """
+    Fetch DEM via py3dep (USGS 3DEP, 1/3 arc-second ~10m or 1 arc-second ~30m).
+    Returns (dem_array_northup, grid_info) or None if py3dep unavailable.
+    Resolution 30m is standard for TWI computation in hydrology publications.
+    Citation: U.S. Geological Survey, 3D Elevation Program.
+    """
+    py3dep = _try_import_py3dep()
+    if py3dep is None:
+        return None
+    try:
+        import xarray as xr
+        bbox = (lon_min - 0.05, lat_min - 0.05, lon_max + 0.05, lat_max + 0.05)
+        logger.info("py3dep: fetching DEM for bbox %s at %dm resolution...", bbox, resolution)
+        dem_ds = py3dep.get_map(
+            "DEM", bbox, resolution=resolution, geo_crs="EPSG:4326", crs="EPSG:4326"
+        )
+        # xarray DataArray -> numpy; lat decreasing (north-up)
+        dem_arr = np.array(dem_ds, dtype=float)
+        lats = np.array(dem_ds.y, dtype=float)
+        lons = np.array(dem_ds.x, dtype=float)
+        # Ensure north-up: flip if needed
+        if lats[0] < lats[-1]:
+            dem_arr = np.flipud(dem_arr)
+            lats = lats[::-1]
+        dem_arr = np.where(np.isnan(dem_arr), 0.0, dem_arr)
+        res_deg = abs(float(lats[0] - lats[1])) if len(lats) > 1 else 30 / 111_000
+        logger.info(
+            "py3dep DEM fetched: shape=%s, elev=%.0f-%.0fm",
+            dem_arr.shape, dem_arr.min(), dem_arr.max(),
+        )
+        return dem_arr, {
+            "lats": lats, "lons": lons, "res": res_deg,
+            "lat_min": lat_min, "lat_max": lat_max,
+            "lon_min": lon_min, "lon_max": lon_max,
+        }
+    except Exception as exc:
+        logger.warning("py3dep DEM fetch failed: %s — will fall back to Open-Elevation.", exc)
+        return None
 
 
 def _fetch_elevations_batch(latlons: list[tuple[float, float]]) -> list[float]:
@@ -170,10 +230,13 @@ def _sample_grid(grid_arr: np.ndarray, info: dict, lat: float, lon: float) -> fl
 
 def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -> pd.Series:
     """
-    Real TWI per point using pysheds on an Open-Elevation API grid DEM.
-    No API key, no GDAL/make system tools required.
-    Resolution: 0.05 deg (~5km) — real spatial variation within each basin.
-    Requires: pip install pysheds affine
+    Real TWI per point using pysheds on a py3dep (USGS 3DEP, primary) or
+    Open-Elevation API (fallback) DEM.
+
+    TWI = ln(a / tan(β)) where a = upslope contributing area (m²/m) and
+    β = local slope angle. Computed via D8 flow routing (O'Callaghan & Mark 1984)
+    using pysheds. Elevation source: USGS 3D Elevation Program (3DEP) at 30m
+    resolution via py3dep, falling back to Open-Elevation API at 0.05° (~5km).
     """
     try:
         from pysheds.grid import Grid
@@ -194,11 +257,21 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
         lon_min = basin_pts["lon"].min() - 0.15
         lon_max = basin_pts["lon"].max() + 0.15
 
-        elev_arr, info = _build_basin_dem(lat_min, lat_max, lon_min, lon_max, res)
-        cellsize_m = res * 111_000
+        # Try py3dep (30m USGS 3DEP) first, fall back to Open-Elevation (5km)
+        dem_result = _fetch_dem_py3dep(lat_min, lat_max, lon_min, lon_max, resolution=30)
+        if dem_result is None:
+            logger.info("Basin '%s': falling back to Open-Elevation API for DEM.", basin)
+            elev_arr, info = _build_basin_dem(lat_min, lat_max, lon_min, lon_max, res)
+        else:
+            elev_arr, info = dem_result
 
-        # Build pysheds Raster
-        aff = affine_lib.Affine(res, 0, lon_min, 0, -res, lat_max)
+        res_deg = float(info["res"])
+        cellsize_m = res_deg * 111_000
+
+        # Build pysheds Raster — use res_deg from actual DEM (py3dep or fallback)
+        lon_origin = float(info["lon_min"]) - 0.15
+        lat_origin = float(info["lat_max"]) + 0.15
+        aff = affine_lib.Affine(res_deg, 0, lon_origin, 0, -res_deg, lat_origin)
         vf = ViewFinder(affine=aff, shape=elev_arr.shape, nodata=-9999.0)
         dem_raster = Raster(elev_arr.copy(), viewfinder=vf)
         grid = Grid(viewfinder=vf)

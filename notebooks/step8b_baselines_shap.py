@@ -4,6 +4,7 @@ Run this cell AFTER the main pipeline completes and trains the XGBoost model.
 It evaluates 3 baseline models and generates SHAP interpretability plots.
 """
 import sys
+import importlib
 sys.path.insert(0, "/content/FloodAI/src")
 
 # Install SHAP if not present
@@ -11,6 +12,13 @@ import subprocess
 subprocess.run(["pip", "install", "-q", "shap", "matplotlib"], check=True)
 
 import pandas as pd
+
+# Force-reload modules so git pull changes take effect without session restart
+import floodai.models.baselines as _bm
+import floodai.evaluation.shap_analysis as _sa
+importlib.reload(_bm)
+importlib.reload(_sa)
+
 from floodai.models.baselines import run_baselines
 from floodai.evaluation.shap_analysis import run_shap_analysis
 

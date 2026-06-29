@@ -34,7 +34,7 @@ class ClimatologicalBaseline:
         self.window_days = window_days
         self.climatology_: pd.DataFrame | None = None
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+    def fit(self, X: pd.DataFrame, y) -> None:
         """
         X must contain 'basin_key' and 'Day_of_Year'.
         """
@@ -42,35 +42,36 @@ class ClimatologicalBaseline:
             raise ValueError("Climatological baseline requires 'basin_key' and 'Day_of_Year'.")
 
         df = X[["basin_key", "Day_of_Year"]].copy()
-        df["target"] = np.asarray(y)
+        df["target"] = np.asarray(y, dtype=float)
 
-        # Calculate raw daily rate per basin
         raw_rates = df.groupby(["basin_key", "Day_of_Year"])["target"].mean().reset_index()
-        
-        # Smooth with a rolling window (handle wraparound at end of year)
-        smoothed_rates = []
+
+        records = []
         for basin in raw_rates["basin_key"].unique():
             basin_data = raw_rates[raw_rates["basin_key"] == basin].set_index("Day_of_Year")
-            # Keep only the numeric target column before reindex
-            basin_data = basin_data[["target"]].reindex(range(1, 367)).fillna(0)
-            
-            # Pad for wraparound
-            padded = pd.concat([
-                basin_data.iloc[-self.window_days:],
-                basin_data,
-                basin_data.iloc[:self.window_days]
-            ])
-            
-            smoothed = padded["target"].rolling(window=2*self.window_days+1, center=True).mean()
-            smoothed = smoothed.iloc[self.window_days:-self.window_days]
-            
-            smoothed_df = smoothed.reset_index()
-            smoothed_df.columns = ["Day_of_Year", "target"]
-            smoothed_df["basin_key"] = basin
-            smoothed_rates.append(smoothed_df)
 
-        self.climatology_ = pd.concat(smoothed_rates, ignore_index=True)
-        logger.info(f"Fitted ClimatologicalBaseline (window +/- {self.window_days} days).")
+            # Build a full-year array (index 0 = Day 1, index 365 = Day 366)
+            daily_rate = np.zeros(366, dtype=float)
+            for day in range(1, 367):
+                if day in basin_data.index:
+                    daily_rate[day - 1] = float(basin_data.loc[day, "target"])
+
+            # Smooth with circular (wraparound) window using numpy
+            w = self.window_days
+            smoothed = np.zeros(366, dtype=float)
+            for i in range(366):
+                indices = [(i + j) % 366 for j in range(-w, w + 1)]
+                smoothed[i] = daily_rate[indices].mean()
+
+            for day in range(1, 367):
+                records.append({
+                    "basin_key": basin,
+                    "Day_of_Year": day,
+                    "target": smoothed[day - 1],
+                })
+
+        self.climatology_ = pd.DataFrame(records)
+        logger.info("Fitted ClimatologicalBaseline (window +/- %d days).", self.window_days)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         if self.climatology_ is None:

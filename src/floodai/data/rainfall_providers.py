@@ -73,12 +73,27 @@ class IMDGriddedRainfallProvider(RainfallProvider):
                 "imdlib is not installed. Run: pip install imdlib --break-system-packages"
             ) from e
 
+        # Check if local file exists in the directory structure
+        local_file = self.cache_dir / "rain" / f"{year}.grd"
+        if local_file.exists():
+            logger.info("Loading local IMD gridded rainfall for year %d from %s...", year, local_file)
+            try:
+                data = imdlib.open_data(
+                    "rain", year, year, fn_format="yearwise", file_dir=str(self.cache_dir)
+                )
+                ds = data.get_xarray()
+                self._yearly_cache[year] = ds
+                return ds
+            except Exception as e:
+                logger.warning("Failed to open local IMD file %s: %s. Falling back to downloading.", local_file, e)
+
         logger.info("Fetching IMD gridded rainfall for year %d (cache_dir=%s)...", year, self.cache_dir)
         try:
             data = imdlib.get_data(
                 "rain", year, year, fn_format="yearwise", file_dir=str(self.cache_dir)
             )
             ds = data.get_xarray()
+            time.sleep(1.0)  # be polite to the source server after a download
         except Exception as e:
             raise DataIngestionError(
                 f"imdlib failed to fetch/parse IMD rainfall for {year}: {e}"
@@ -102,7 +117,6 @@ class IMDGriddedRainfallProvider(RainfallProvider):
             df_year = point.to_dataframe().reset_index()[["time", "rain"]]
             df_year.columns = ["Date", "Rainfall_mm"]
             frames.append(df_year)
-            time.sleep(0.2)  # be polite to the source server across years
 
         df = pd.concat(frames, ignore_index=True)
         df["Date"] = pd.to_datetime(df["Date"])

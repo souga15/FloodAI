@@ -77,7 +77,7 @@ def _build_synthetic_basin_dataset(seed: int = 42) -> tuple[pd.DataFrame, list[s
         "Heavy_Rain_Days_7D", "Consecutive_Dry_Days", "Soil_Moisture_Proxy",
         "Elevation_m", "Curve_Number", "CN_Runoff_Q",
         "Elevation_Rain_Ratio", "Monsoon_Rain_Interaction",
-        "Humidity_Temp_Product", "Soil_Monsoon_Interaction",
+        "Soil_Monsoon_Interaction",
     ]
     return df, feature_columns
 

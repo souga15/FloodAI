@@ -61,9 +61,40 @@ ESA_TO_CN_CLASS: dict[int, str] = {
 # ---------------------------------------------------------------------------
 SOILGRIDS_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
 
+import json
+from pathlib import Path
+
+SOIL_CACHE_PATH = Path("data/raw/soilgrids_cache.json")
+_SOIL_CACHE: dict[str, dict[str, float]] = {}
+
+def _load_soil_cache():
+    global _SOIL_CACHE
+    if SOIL_CACHE_PATH.exists():
+        try:
+            with open(SOIL_CACHE_PATH, "r") as f:
+                _SOIL_CACHE = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load SoilGrids cache: %s", e)
+
+def _save_soil_cache():
+    try:
+        SOIL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(SOIL_CACHE_PATH, "w") as f:
+            json.dump(_SOIL_CACHE, f, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save SoilGrids cache: %s", e)
+
 
 def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
     """Fetch clay and sand (%) at 0-30cm from ISRIC SoilGrids."""
+    global _SOIL_CACHE
+    if not _SOIL_CACHE:
+        _load_soil_cache()
+
+    key = f"{lat:.4f}_{lon:.4f}"
+    if key in _SOIL_CACHE:
+        return _SOIL_CACHE[key]
+
     params = {
         "lon": lon, "lat": lat,
         "property": ["clay", "sand"],
@@ -71,7 +102,7 @@ def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
         "value": ["mean"],
     }
     try:
-        resp = requests.get(SOILGRIDS_URL, params=params, timeout=20)
+        resp = requests.get(SOILGRIDS_URL, params=params, timeout=3)
         resp.raise_for_status()
         result = {}
         for layer in resp.json().get("properties", {}).get("layers", []):
@@ -80,9 +111,14 @@ def fetch_soil_properties(lat: float, lon: float) -> dict[str, float] | None:
                     if d["values"].get("mean") is not None]
             if vals:
                 result[name] = float(np.mean(vals)) / 10.0  # g/kg -> %
+        
+        _SOIL_CACHE[key] = result or None
+        _save_soil_cache()
         return result or None
     except Exception as exc:
         logger.debug("SoilGrids failed (%.4f, %.4f): %s", lat, lon, exc)
+        _SOIL_CACHE[key] = None
+        _save_soil_cache()
         return None
 
 
@@ -163,6 +199,21 @@ def _fetch_dem_py3dep(
         if lats[0] < lats[-1]:
             dem_arr = np.flipud(dem_arr)
             lats = lats[::-1]
+
+        # Check if the array is empty, all-NaN, or flat (max - min < 1.0)
+        if len(dem_arr) == 0 or np.all(np.isnan(dem_arr)):
+            logger.warning("py3dep DEM for bbox %s is empty or contains only NaNs.", bbox)
+            return None
+
+        elev_range = float(np.nanmax(dem_arr) - np.nanmin(dem_arr))
+        if elev_range < 1.0:
+            logger.warning(
+                "py3dep DEM for bbox %s returned effectively flat/zero elevation "
+                "(range=%.2fm). This is a silent API failure (no coverage or bad tile). "
+                "Falling back to Open-Elevation.", bbox, elev_range
+            )
+            return None
+
         dem_arr = np.where(np.isnan(dem_arr), 0.0, dem_arr)
         res_deg = abs(float(lats[0] - lats[1])) if len(lats) > 1 else 30 / 111_000
         logger.info(
@@ -242,6 +293,9 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
     resolution via py3dep, falling back to Open-Elevation API at 0.05° (~5km).
     """
     try:
+        # Patch numpy for pysheds compatibility on NumPy 2.x
+        if not hasattr(np, "in1d"):
+            np.in1d = np.isin
         from pysheds.grid import Grid
         from pysheds.view import Raster, ViewFinder
         import affine as affine_lib
@@ -250,6 +304,7 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
 
     twi_series = pd.Series(np.nan, index=points_df.index, dtype=float)
     res = 0.05
+    basin_sources: dict[str, str] = {}
 
     for basin in points_df["basin_key"].unique():
         mask = points_df["basin_key"] == basin
@@ -276,8 +331,10 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
         if dem_result is None:
             logger.info("Basin '%s': falling back to Open-Elevation API for DEM.", basin)
             elev_arr, info = _build_basin_dem(lat_min, lat_max, lon_min, lon_max, res)
+            basin_sources[basin] = "open_elevation"
         else:
             elev_arr, info = dem_result
+            basin_sources[basin] = "py3dep"
 
         res_deg = float(info["res"])
         cellsize_m = res_deg * 111_000
@@ -324,6 +381,18 @@ def compute_real_twi(points_df: pd.DataFrame, dem_cache_dir: str = "/tmp/dem") -
         logger.info("Basin '%s' TWI: %.2f-%.2f (mean=%.2f)",
                     basin, twi_series[mask].min(),
                     twi_series[mask].max(), twi_series[mask].mean())
+
+    logger.info("DEM Source Summary per Basin:")
+    for b, src in basin_sources.items():
+        logger.info("  - %s: %s", b, src)
+
+    unique_sources = set(basin_sources.values())
+    if len(unique_sources) > 1:
+        raise RuntimeError(
+            f"Inconsistent DEM sources used across basins: {basin_sources}. "
+            f"Mixed DEM sources can distort features across basins. "
+            f"Please configure a consistent source."
+        )
 
     n_nan = twi_series.isna().sum()
     if n_nan:

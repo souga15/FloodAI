@@ -37,11 +37,7 @@ basins:
     bbox: { lat_min: 19.0, lat_max: 23.5, lon_min: 81.5, lon_max: 87.5 }
     n_points_target: 60
     tier_prior: 3   # documented prior: reservoir/cyclone-driven, expected to be the hard case
-  sutlej_punjab:
-    label: "Sutlej Basin — Punjab"
-    bbox: { lat_min: 30.0, lat_max: 32.5, lon_min: 74.0, lon_max: 77.5 }
-    n_points_target: 65
-    tier_prior: 2   # snowmelt + monsoon mechanism; differs structurally from Ganga and Brahmaputra
+
 
 # -----------------------------------------------------------------------------
 # Data sources. Each entry names exactly one provider and is swappable —
